@@ -468,14 +468,14 @@ function onTouchStart(e) {
   if (holder.visible) {
     const ray = touchRay(e.frame, e.inputSource);
     const hits = ray ? ray.intersectObject(xr.panel, true) : [];
-    // 扉をタップしたら開閉(離したときに判定)
-    if (hits.length && hits[0].object.userData.door !== undefined) {
-      xr.touch = { kind: 'door', t0: performance.now() };
-      return;
-    }
-    // 盤の本体を触ったときは何もしない(回転や置き直しと区別する)
+    // 盤を触ったら、ドラッグで移動。扉を動かさずに離したら開閉
     if (hits.length) {
-      xr.touch = { kind: 'none' };
+      xr.touch = {
+        kind: hits[0].object.userData.door !== undefined ? 'door' : 'move',
+        source: e.inputSource, t0: performance.now(),
+        p0: floorPoint(e.frame, e.inputSource, holder.position.y),
+        pos0: holder.position.clone(),
+      };
       return;
     }
     // 足元の輪の上を触ったときだけ回転
@@ -513,7 +513,7 @@ function onXRFrame(time, frame) {
 
   if (xr.hitSource) {
     const hits = frame.getHitTestResults(xr.hitSource);
-    if (hits.length && touch?.kind !== 'rotate') {
+    if (hits.length && touch?.kind !== 'rotate' && touch?.kind !== 'move') {
       reticle.visible = true;
       reticle.matrix.fromArray(hits[0].getPose(ref).transform.matrix);
     } else {
@@ -529,6 +529,15 @@ function onXRFrame(time, frame) {
       placePanel();
       xr.touch = { kind: 'done' };
       xr.progress.visible = false;
+    }
+  } else if ((touch?.kind === 'move' || touch?.kind === 'door') && touch.p0) {
+    const p = floorPoint(frame, touch.source, holder.position.y);
+    if (p) {
+      const dx = p.x - touch.p0.x;
+      const dz = p.z - touch.p0.z;
+      // 3cm 以上動いたら扉のタップではなく移動とみなす
+      if (touch.kind === 'door' && Math.hypot(dx, dz) > 0.03) touch.kind = 'move';
+      if (touch.kind === 'move') holder.position.set(touch.pos0.x + dx, touch.pos0.y, touch.pos0.z + dz);
     }
   } else if (touch?.kind === 'rotate') {
     const p = floorPoint(frame, touch.source, holder.position.y);
