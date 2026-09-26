@@ -7,32 +7,90 @@ const params = new URLSearchParams(location.search);
 
 // ---------- 盤モデル ----------
 // 原点は底面中央、正面は +Z。単位はメートル。
-function buildPanel({ w, h, d, color }) {
+// 箱は中が空いた筐体(背板・側板・天板・底板)+取付板+前面の扉。
+// 幅 900mm を超えると両開き。扉は userData.doors の pivot を回して開閉する。
+const DOOR_OPEN_ANGLE = THREE.MathUtils.degToRad(105);
+
+function buildPanel({ w, h, d, color }, doorsOpen = false) {
   const group = new THREE.Group();
   group.name = 'panel';
   const body = new THREE.MeshStandardMaterial({ color, roughness: 0.55, metalness: 0.1 });
-  const door = new THREE.MeshStandardMaterial({ color: new THREE.Color(color).multiplyScalar(0.96), roughness: 0.5, metalness: 0.1 });
+  const inner = new THREE.MeshStandardMaterial({ color: new THREE.Color(color).multiplyScalar(0.8), roughness: 0.7, metalness: 0.05 });
+  const plateMat = new THREE.MeshStandardMaterial({ color: '#e8e4d4', roughness: 0.6, metalness: 0.2 });
   const dark = new THREE.MeshStandardMaterial({ color: '#2b2f33', roughness: 0.4, metalness: 0.5 });
 
-  // 本体
-  const box = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), body);
-  box.position.y = h / 2;
-  group.add(box);
+  const t = Math.min(0.015, w * 0.05, d * 0.1);       // 板厚
+  const dt = Math.min(0.02, d * 0.15);               // 扉の厚み
+  const cd = d - dt;                                  // 筐体の奥行(扉を除く)
+  const cz = -d / 2 + cd / 2;                         // 筐体の中心 z
+  const box = (bw, bh, bd, mat, x, y, z) => {
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(bw, bh, bd), mat);
+    mesh.position.set(x, y, z);
+    group.add(mesh);
+    return mesh;
+  };
 
-  // 扉(正面の少し内側に一回り小さい板)
-  const m = Math.min(0.025, w * 0.05, h * 0.05);
-  const t = 0.004;
-  const plate = new THREE.Mesh(new THREE.BoxGeometry(w - 2 * m, h - 2 * m, t), door);
-  plate.position.set(0, h / 2, d / 2 + t / 2);
-  group.add(plate);
+  // 筐体
+  box(w, h, t, body, 0, h / 2, -d / 2 + t / 2);                       // 背板
+  box(t, h, cd - t, body, -w / 2 + t / 2, h / 2, cz + t / 2);          // 左側板
+  box(t, h, cd - t, body, w / 2 - t / 2, h / 2, cz + t / 2);           // 右側板
+  box(w - 2 * t, t, cd - t, body, 0, h - t / 2, cz + t / 2);           // 天板
+  box(w - 2 * t, t, cd - t, body, 0, t / 2, cz + t / 2);               // 底板
+  // 内側の面(外板と色を変えて奥行きを分かりやすく)
+  box(w - 2 * t, h - 2 * t, 0.002, inner, 0, h / 2, -d / 2 + t + 0.001);
+  // 取付板
+  const pm = Math.min(0.06, w * 0.08, h * 0.05);
+  box(w - 2 * t - 2 * pm, h - 2 * t - 2 * pm, 0.003, plateMat, 0, h / 2, -d / 2 + t + Math.min(0.03, cd * 0.2));
 
-  // ハンドル(右側)
+  // 扉
+  const gap = 0.002;
+  const double = w > 0.9;
+  const doors = [];
+  const leaves = double ? [{ side: -1, width: w / 2 - gap * 1.5 }, { side: 1, width: w / 2 - gap * 1.5 }]
+                        : [{ side: -1, width: w - gap * 2 }];
   const hh = Math.min(0.18, h * 0.2);
-  const handle = new THREE.Mesh(new THREE.BoxGeometry(0.025, hh, 0.03), dark);
-  handle.position.set(w / 2 - m - 0.05, h * 0.5, d / 2 + t + 0.015);
-  if (w > 0.15) group.add(handle);
-
+  for (const leaf of leaves) {
+    // 蝶番は外側の縁。pivot を回すと扉が手前に開く
+    const pivot = new THREE.Group();
+    pivot.position.set(leaf.side * (w / 2 - gap), h / 2, d / 2 - dt);
+    const dir = -leaf.side; // 蝶番から扉の先端へ向かう x の向き
+    const panel = new THREE.Mesh(new THREE.BoxGeometry(leaf.width, h - gap * 2, dt), body);
+    panel.position.set(dir * leaf.width / 2, 0, dt / 2);
+    pivot.add(panel);
+    const handle = new THREE.Mesh(new THREE.BoxGeometry(0.025, hh, 0.03), dark);
+    handle.position.set(dir * (leaf.width - Math.min(0.06, leaf.width * 0.15)), 0, dt + 0.015);
+    if (leaf.width > 0.15) pivot.add(handle);
+    group.add(pivot);
+    const index = doors.length;
+    panel.userData.door = index;
+    handle.userData.door = index;
+    doors.push({ pivot, sign: leaf.side < 0 ? -1 : 1, angle: 0 });
+  }
+  group.userData.doors = doors;
+  setDoors(group, doorsOpen, true);
   return group;
+}
+
+// 扉の開閉。immediate でなければ目標角だけ設定し、animateDoors で動かす
+function setDoors(panel, open, immediate = false) {
+  panel.userData.doorsOpen = open;
+  for (const door of panel.userData.doors) {
+    door.target = open ? DOOR_OPEN_ANGLE : 0;
+    if (immediate) {
+      door.angle = door.target;
+      door.pivot.rotation.y = door.sign * door.angle;
+    }
+  }
+}
+
+function animateDoors(panel, dt) {
+  for (const door of panel.userData.doors) {
+    const diff = door.target - door.angle;
+    if (Math.abs(diff) < 1e-3) continue;
+    const step = Math.sign(diff) * Math.min(Math.abs(diff), dt * 2.5); // 約 0.7 秒で全開
+    door.angle += step;
+    door.pivot.rotation.y = door.sign * door.angle;
+  }
 }
 
 function readSize() {
@@ -79,8 +137,11 @@ function resizePreview() {
 }
 new ResizeObserver(resizePreview).observe(pCanvas);
 
+const pClock = new THREE.Clock();
 pRenderer.setAnimationLoop(() => {
+  const dt = pClock.getDelta();
   if (xrSession) return;
+  if (previewPanel) animateDoors(previewPanel, dt);
   controls.update();
   pRenderer.render(pScene, pCamera);
 });
@@ -110,7 +171,7 @@ async function publishUsdz(blob, m) {
   }
   if (reg && navigator.serviceWorker.controller) {
     try {
-      const name = `usdz/panel_${Math.round(m.w * 1000)}x${Math.round(m.h * 1000)}x${Math.round(m.d * 1000)}_${m.color.slice(1)}.usdz`;
+      const name = `usdz/panel_${Math.round(m.w * 1000)}x${Math.round(m.h * 1000)}x${Math.round(m.d * 1000)}_${m.color.slice(1)}${doorsOpen ? '_open' : ''}.usdz`;
       const url = new URL(name, location.href).href;
       const cache = await caches.open('usdz');
       await cache.put(url, new Response(blob, { headers: { 'Content-Type': 'model/vnd.usdz+zip' } }));
@@ -124,7 +185,7 @@ let usdzBuild = 0;
 async function buildUsdz(m) {
   const id = ++usdzBuild;
   const scene = new THREE.Scene();
-  scene.add(buildPanel(m));
+  scene.add(buildPanel(m, doorsOpen));
   const data = await new USDZExporter().parseAsync(scene, {
     quickLookCompatible: true,
     ar: { anchoring: { type: 'plane' }, planeAnchoring: { alignment: 'horizontal' } },
@@ -150,11 +211,12 @@ function openQuickLook() {
 
 // ---------- 入力変更 ----------
 let debounce = 0;
+let doorsOpen = false;
 function onSizeChange() {
   const s = readSize();
   const m = toMeters(s);
   if (previewPanel) pScene.remove(previewPanel);
-  previewPanel = buildPanel(m);
+  previewPanel = buildPanel(m, doorsOpen);
   pScene.add(previewPanel);
   $('dims').textContent = `W${s.wmm} × H${s.hmm} × D${s.dmm} mm`;
   if (quickLook) {
@@ -184,6 +246,36 @@ for (const b of document.querySelectorAll('#swatches button')) {
 }
 $('color').addEventListener('input', markSwatch);
 $('size-form').addEventListener('submit', (e) => e.preventDefault());
+
+// 扉の開閉(プレビュー)。iPhone の AR はこの状態で表示する
+function toggleDoors() {
+  doorsOpen = !doorsOpen;
+  setDoors(previewPanel, doorsOpen);
+  $('door-btn').textContent = doorsOpen ? '扉を閉じる' : '扉を開く';
+  if (quickLook) {
+    usdzUrl = null;
+    updateArButton();
+    clearTimeout(debounce);
+    debounce = setTimeout(() => buildUsdz(toMeters(readSize())), 250);
+  }
+}
+$('door-btn').addEventListener('click', toggleDoors);
+
+// プレビューの扉をタップしても開閉
+function hitDoor(raycaster, panel) {
+  const hit = raycaster.intersectObject(panel, true).find((i) => i.object.userData.door !== undefined);
+  return hit ? hit.object.userData.door : null;
+}
+let downAt = null;
+pCanvas.addEventListener('pointerdown', (e) => { downAt = { x: e.clientX, y: e.clientY, t: performance.now() }; });
+pCanvas.addEventListener('pointerup', (e) => {
+  if (!downAt || Math.hypot(e.clientX - downAt.x, e.clientY - downAt.y) > 8 || performance.now() - downAt.t > 400) return;
+  const r = pCanvas.getBoundingClientRect();
+  const ndc = new THREE.Vector2(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
+  const ray = new THREE.Raycaster();
+  ray.setFromCamera(ndc, pCamera);
+  if (hitDoor(ray, previewPanel) !== null) toggleDoors();
+});
 
 // ---------- ボタン状態 ----------
 let webxrAR = false;
@@ -295,7 +387,8 @@ async function startXR() {
   const m = toMeters(readSize());
   const holder = new THREE.Group();
   holder.visible = false;
-  holder.add(buildPanel(m));
+  const panel = buildPanel(m, doorsOpen);
+  holder.add(panel);
   const shadow = new THREE.Mesh(
     new THREE.PlaneGeometry(m.w * 1.6, m.d * 1.6 + 0.2).rotateX(-Math.PI / 2),
     new THREE.MeshBasicMaterial({ map: makeShadowTexture(), transparent: true, depthWrite: false }),
@@ -320,7 +413,7 @@ async function startXR() {
   scene.add(holder);
 
   xr = {
-    session, renderer, scene, camera, reticle, progress, holder, ring, ringR, camQuad,
+    session, renderer, scene, camera, reticle, progress, holder, panel, ring, ringR, camQuad, lastTime: 0,
     hitSource: null, touch: null, mode: 'photo',
     photoPending: false, recorder: null, recStart: 0, recTimer: 0,
     recCanvas: null, recCtx: null, pixels: null, frame: 0,
@@ -360,8 +453,26 @@ function angleAround(center, p) {
   return Math.atan2(p.x - center.x, p.z - center.z);
 }
 
+// 画面タッチの光線を Raycaster に
+function touchRay(frame, inputSource) {
+  const pose = frame.getPose(inputSource.targetRaySpace, xr.renderer.xr.getReferenceSpace());
+  if (!pose) return null;
+  const mat = new THREE.Matrix4().fromArray(pose.transform.matrix);
+  const origin = new THREE.Vector3().setFromMatrixPosition(mat);
+  const dir = new THREE.Vector3(0, 0, -1).transformDirection(mat);
+  return new THREE.Raycaster(origin, dir);
+}
+
 function onTouchStart(e) {
   const { holder, ringR } = xr;
+  // 扉をタップしたら開閉(離したときに判定)
+  if (holder.visible) {
+    const ray = touchRay(e.frame, e.inputSource);
+    if (ray && hitDoor(ray, xr.panel) !== null) {
+      xr.touch = { kind: 'door', t0: performance.now() };
+      return;
+    }
+  }
   // 置いた盤の輪(または盤の足元)をタッチしたら回転
   if (holder.visible) {
     const p = floorPoint(e.frame, e.inputSource, holder.position.y);
@@ -380,6 +491,9 @@ function onTouchStart(e) {
 
 function onTouchEnd() {
   if (!xr) return;
+  if (xr.touch?.kind === 'door' && performance.now() - xr.touch.t0 < 500) {
+    setDoors(xr.panel, !xr.panel.userData.doorsOpen);
+  }
   xr.touch = null;
   xr.progress.visible = false;
   xr.ring.material.opacity = 0.55;
@@ -389,6 +503,9 @@ function onXRFrame(time, frame) {
   const { renderer, scene, camera, reticle, holder, camQuad, touch } = xr;
   const ref = renderer.xr.getReferenceSpace();
   const pose = frame.getViewerPose(ref);
+  const dt = xr.lastTime ? Math.min((time - xr.lastTime) / 1000, 0.1) : 0;
+  xr.lastTime = time;
+  animateDoors(xr.panel, dt);
 
   if (xr.hitSource) {
     const hits = frame.getHitTestResults(xr.hitSource);
