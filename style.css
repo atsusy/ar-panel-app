@@ -9,7 +9,15 @@ fieldset { border:1px solid #cfd5dc; border-radius:10px; padding:10px 12px; marg
 legend { padding:0 4px; color:var(--muted); font-size:.85rem; }
 label { display:flex; flex-direction:column; font-size:.8rem; color:var(--muted); gap:4px; }
 input, select { font-size:16px; padding:8px; border:1px solid #cfd5dc; border-radius:8px; width:100%; background:#fff; color:var(--fg); }
-label.color { margin-bottom:12px; }
+/* 塗装色 */
+.color { margin-bottom:12px; }
+.color .label { display:block; font-size:.8rem; color:var(--muted); margin-bottom:6px; }
+.swatches { display:flex; flex-wrap:wrap; gap:6px; }
+.swatches button, .swatches .custom { display:flex; align-items:center; gap:6px; flex-direction:row;
+  padding:6px 10px; font-size:.85rem; color:var(--fg); border:1px solid #cfd5dc; border-radius:999px; background:#fff; }
+.swatches i { width:18px; height:18px; border-radius:50%; border:1px solid #0003; display:inline-block; }
+.swatches .on { border-color:var(--accent); box-shadow:0 0 0 2px var(--accent) inset; }
+.swatches .custom input { width:22px; height:22px; padding:0; border:none; background:none; }
 #preview-wrap { position:relative; height:46vh; min-height:260px; border-radius:12px; overflow:hidden; background:#dfe3e8; }
 #preview { width:100%; height:100%; display:block; touch-action:none; }
 #dims { position:absolute; left:10px; bottom:8px; font-size:.8rem; color:#333; background:#fffc; padding:2px 8px; border-radius:6px; }
@@ -19,16 +27,30 @@ button:disabled { opacity:.5; }
 #ar-btn { width:100%; margin-top:14px; font-weight:600; }
 .hint { font-size:.85rem; color:var(--muted); line-height:1.6; }
 
-#xr-overlay { position:fixed; inset:0; pointer-events:none; }
-#xr-overlay button { pointer-events:auto; background:#000a; color:#fff; border-color:#fff6; }
-#xr-overlay button.primary { background:var(--accent); border-color:var(--accent); }
-#xr-overlay button.rec-on { background:#d11; border-color:#d11; }
-.xr-top { position:absolute; top:0; left:0; right:0; display:flex; align-items:center; gap:8px;
-  padding: calc(env(safe-area-inset-top) + 10px) 12px 10px; }
-#xr-msg { flex:1; color:#fff; font-size:.9rem; text-shadow:0 1px 3px #000; }
-.xr-bottom { position:absolute; left:0; right:0; bottom:0; padding:12px 12px calc(env(safe-area-inset-bottom) + 16px);
-  display:flex; flex-direction:column; gap:10px; }
-.xr-bottom .row { display:flex; gap:10px; justify-content:center; }
-.xr-bottom .row button { flex:1; max-width:160px; }
+#xr-overlay { position:fixed; inset:0; pointer-events:none; color:#fff;
+  -webkit-user-select:none; user-select:none; -webkit-tap-highlight-color:transparent; }
+#xr-overlay button { pointer-events:auto; }
+.xr-top { position:absolute; top:0; left:0; right:0; height:64px; display:flex; align-items:center; justify-content:center;
+  padding-top: env(safe-area-inset-top); }
+#xr-exit { position:absolute; left:12px; top:calc(env(safe-area-inset-top) + 10px); width:44px; height:44px; padding:0;
+  border-radius:50%; border:none; background:#0006; color:#fff; font-size:20px; }
+#xr-rec-time { background:#e0241b; color:#fff; font-variant-numeric:tabular-nums; font-size:.95rem;
+  padding:3px 10px; border-radius:6px; }
+.xr-bottom { position:absolute; left:0; right:0; bottom:0; padding:10px 24px calc(env(safe-area-inset-bottom) + 22px);
+  background:linear-gradient(transparent, #0007); display:flex; flex-direction:column; align-items:center; gap:12px; }
+#xr-modes { display:flex; gap:18px; }
+#xr-modes button { background:none; border:none; padding:6px 4px; color:#fffb; font-size:.9rem; font-weight:600; letter-spacing:.05em; }
+#xr-modes button.on { color:#ffd60a; }
+#xr-modes.locked { visibility:hidden; }
+.shutter-row { width:100%; max-width:360px; display:flex; align-items:center; justify-content:space-between; }
+.thumb { width:48px; height:48px; border-radius:8px; background:center/cover no-repeat; }
+.thumb.has { border:2px solid #fff; }
+.shutter { width:76px; height:76px; padding:0; border-radius:50%; border:4px solid #fff; background:transparent;
+  display:flex; align-items:center; justify-content:center; }
+.shutter span { display:block; width:60px; height:60px; border-radius:50%; background:#fff; transition:all .2s; }
+.shutter.video span { background:#e0241b; }
+.shutter.video.recording span { width:28px; height:28px; border-radius:6px; }
+.shutter:active span { transform:scale(.92); }
+.shutter:disabled { opacity:.35; }
 #xr-flash { position:absolute; inset:0; background:#fff; opacity:0; transition:opacity .25s; }
 #xr-flash.on { opacity:.8; transition:none; }

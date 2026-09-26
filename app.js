@@ -164,7 +164,25 @@ function onSizeChange() {
     debounce = setTimeout(() => buildUsdz(m), 250);
   }
 }
-for (const id of ['w', 'h', 'd', 'color']) $(id).addEventListener('input', onSizeChange);
+for (const id of ['w', 'h', 'd', 'color']) {
+  $(id).addEventListener('input', onSizeChange);
+  $(id).addEventListener('change', onSizeChange);
+}
+// 塗装色の見本
+function markSwatch() {
+  const v = $('color').value.toLowerCase();
+  let hit = false;
+  for (const b of document.querySelectorAll('#swatches button')) {
+    const on = b.dataset.color === v;
+    b.classList.toggle('on', on);
+    hit ||= on;
+  }
+  $('color').parentElement.classList.toggle('on', !hit);
+}
+for (const b of document.querySelectorAll('#swatches button')) {
+  b.addEventListener('click', () => { $('color').value = b.dataset.color; markSwatch(); onSizeChange(); });
+}
+$('color').addEventListener('input', markSwatch);
 $('size-form').addEventListener('submit', (e) => e.preventDefault());
 
 // ---------- ボタン状態 ----------
@@ -179,7 +197,7 @@ function updateArButton() {
   } else if (webxrAR) {
     btn.disabled = false;
     btn.textContent = 'ARで置く(Android)';
-    hint.innerHTML = 'AR画面で床に照準が出たら「ここに置く」。写真・動画はダウンロード フォルダに保存され、Googleフォトのギャラリーから見られます。';
+    hint.innerHTML = 'AR画面で床に出る白い丸を長押しすると盤を置けます。足元の輪をなぞると回転します。写真・動画はダウンロード フォルダに保存されます。';
   } else {
     btn.disabled = true;
     btn.textContent = 'この端末ではARを使えません';
@@ -214,13 +232,15 @@ function makeShadowTexture() {
   return new THREE.CanvasTexture(c);
 }
 
+const LONG_PRESS_MS = 600;
+
 async function startXR() {
   const overlay = $('xr-overlay');
   let session;
   try {
     session = await navigator.xr.requestSession('immersive-ar', {
       requiredFeatures: ['hit-test'],
-      optionalFeatures: ['dom-overlay', 'camera-access', 'light-estimation'],
+      optionalFeatures: ['dom-overlay', 'camera-access'],
       domOverlay: { root: overlay },
     });
   } catch (e) {
@@ -234,7 +254,6 @@ async function startXR() {
   renderer.setPixelRatio(1);
   renderer.xr.enabled = true;
   renderer.xr.setReferenceSpaceType('local');
-  renderer.autoClear = true;
 
   const scene = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera();
@@ -257,12 +276,20 @@ async function startXR() {
   camQuad.visible = false;
   scene.add(camQuad);
 
-  const reticle = new THREE.Mesh(
-    new THREE.RingGeometry(0.08, 0.1, 40).rotateX(-Math.PI / 2),
-    new THREE.MeshBasicMaterial({ color: '#ffffff' }),
-  );
+  // 照準(白い丸)と、長押しの進み具合を示す塗りつぶし
+  const reticle = new THREE.Group();
   reticle.matrixAutoUpdate = false;
   reticle.visible = false;
+  reticle.add(new THREE.Mesh(
+    new THREE.RingGeometry(0.08, 0.1, 48).rotateX(-Math.PI / 2),
+    new THREE.MeshBasicMaterial({ color: '#ffffff' }),
+  ));
+  const progress = new THREE.Mesh(
+    new THREE.CircleGeometry(0.08, 48).rotateX(-Math.PI / 2),
+    new THREE.MeshBasicMaterial({ color: '#ffffff', transparent: true, opacity: 0.7 }),
+  );
+  progress.visible = false;
+  reticle.add(progress);
   scene.add(reticle);
 
   const m = toMeters(readSize());
@@ -275,50 +302,116 @@ async function startXR() {
   );
   shadow.position.y = 0.001;
   holder.add(shadow);
+
+  // 回転用の輪(盤の足元)。輪の上をなぞると回転する
+  const ringR = Math.hypot(m.w, m.d) / 2 + 0.15;
+  const ringMat = new THREE.MeshBasicMaterial({ color: '#ffffff', transparent: true, opacity: 0.55, depthWrite: false });
+  const ring = new THREE.Mesh(new THREE.RingGeometry(ringR - 0.02, ringR + 0.02, 96).rotateX(-Math.PI / 2), ringMat);
+  ring.position.y = 0.003;
+  holder.add(ring);
+  // 輪の上の矢印(回せることを示す)
+  const arrowGeo = new THREE.ConeGeometry(0.045, 0.1, 3).rotateZ(-Math.PI / 2).rotateX(-Math.PI / 2);
+  for (const a of [Math.PI / 2, -Math.PI / 2]) {
+    const arrow = new THREE.Mesh(arrowGeo, ringMat);
+    arrow.position.set(Math.sin(a) * ringR, 0.004, Math.cos(a) * ringR);
+    arrow.rotation.y = a + (a > 0 ? 0 : Math.PI);
+    holder.add(arrow);
+  }
   scene.add(holder);
 
-  xr = { session, renderer, scene, camera, reticle, holder, camQuad, hitSource: null,
-    cameraOk: false, photoPending: false, recorder: null, recCanvas: null, recCtx: null, pixels: null, frame: 0 };
+  xr = {
+    session, renderer, scene, camera, reticle, progress, holder, ring, ringR, camQuad,
+    hitSource: null, touch: null, mode: 'photo',
+    photoPending: false, recorder: null, recStart: 0, recTimer: 0,
+    recCanvas: null, recCtx: null, pixels: null, frame: 0,
+  };
   xrSession = session;
 
   await renderer.xr.setSession(session);
   overlay.hidden = false;
   $('setup').hidden = true;
+  setMode('photo');
 
   const viewerSpace = await session.requestReferenceSpace('viewer');
   xr.hitSource = await session.requestHitTestSource({ space: viewerSpace });
 
-  const cameraFeature = session.enabledFeatures?.includes('camera-access');
-  setCaptureEnabled(cameraFeature);
+  xr.cameraOk = !!session.enabledFeatures?.includes('camera-access');
+  updateShutter();
 
   session.addEventListener('end', endXR);
-  // オーバーレイ上のタップを AR の select として扱わない
-  overlay.addEventListener('beforexrselect', (e) => e.preventDefault());
-
+  session.addEventListener('selectstart', onTouchStart);
+  session.addEventListener('selectend', onTouchEnd);
   renderer.setAnimationLoop(onXRFrame);
 }
 
-function setCaptureEnabled(ok) {
-  $('xr-photo').disabled = !ok;
-  $('xr-rec').disabled = !ok;
-  if (!ok) $('xr-msg').textContent = 'この端末はカメラ映像の取り込みに未対応です。撮影は端末のスクリーンショット/画面録画をお使いください';
+// 画面タッチの光線と、高さ y の水平面との交点
+function floorPoint(frame, inputSource, y) {
+  const pose = frame.getPose(inputSource.targetRaySpace, xr.renderer.xr.getReferenceSpace());
+  if (!pose) return null;
+  const mat = new THREE.Matrix4().fromArray(pose.transform.matrix);
+  const origin = new THREE.Vector3().setFromMatrixPosition(mat);
+  const dir = new THREE.Vector3(0, 0, -1).transformDirection(mat);
+  if (Math.abs(dir.y) < 1e-4) return null;
+  const t = (y - origin.y) / dir.y;
+  return t > 0 ? origin.addScaledVector(dir, t) : null;
+}
+
+function angleAround(center, p) {
+  return Math.atan2(p.x - center.x, p.z - center.z);
+}
+
+function onTouchStart(e) {
+  const { holder, ringR } = xr;
+  // 置いた盤の輪(または盤の足元)をタッチしたら回転
+  if (holder.visible) {
+    const p = floorPoint(e.frame, e.inputSource, holder.position.y);
+    if (p) {
+      const d = Math.hypot(p.x - holder.position.x, p.z - holder.position.z);
+      if (d < ringR + 0.25) {
+        xr.touch = { kind: 'rotate', source: e.inputSource, a0: angleAround(holder.position, p), r0: holder.rotation.y };
+        xr.ring.material.opacity = 1;
+        return;
+      }
+    }
+  }
+  // それ以外は長押しで白い丸の位置に置く
+  xr.touch = { kind: 'press', source: e.inputSource, t0: performance.now() };
+}
+
+function onTouchEnd() {
+  if (!xr) return;
+  xr.touch = null;
+  xr.progress.visible = false;
+  xr.ring.material.opacity = 0.55;
 }
 
 function onXRFrame(time, frame) {
-  const { renderer, scene, camera, reticle, holder, camQuad } = xr;
+  const { renderer, scene, camera, reticle, holder, camQuad, touch } = xr;
   const ref = renderer.xr.getReferenceSpace();
   const pose = frame.getViewerPose(ref);
 
   if (xr.hitSource) {
     const hits = frame.getHitTestResults(xr.hitSource);
-    if (hits.length) {
-      const p = hits[0].getPose(ref);
+    if (hits.length && touch?.kind !== 'rotate') {
       reticle.visible = true;
-      reticle.matrix.fromArray(p.transform.matrix);
-      if (!holder.visible) $('xr-msg').textContent = '照準の位置に「ここに置く」で配置します';
+      reticle.matrix.fromArray(hits[0].getPose(ref).transform.matrix);
     } else {
       reticle.visible = false;
     }
+  }
+
+  if (touch?.kind === 'press') {
+    const k = (performance.now() - touch.t0) / LONG_PRESS_MS;
+    xr.progress.visible = reticle.visible;
+    xr.progress.scale.setScalar(Math.max(0.05, Math.min(k, 1)));
+    if (k >= 1 && reticle.visible) {
+      placePanel();
+      xr.touch = { kind: 'done' };
+      xr.progress.visible = false;
+    }
+  } else if (touch?.kind === 'rotate') {
+    const p = floorPoint(frame, touch.source, holder.position.y);
+    if (p) holder.rotation.y = touch.r0 + (angleAround(holder.position, p) - touch.a0);
   }
 
   const xrCam = pose?.views[0]?.camera;
@@ -326,9 +419,27 @@ function onXRFrame(time, frame) {
   camQuad.visible = !!camTex;
   if (camTex) camQuad.material.uniforms.map.value = camTex;
 
+  // 撮影中は操作用の輪と照準を写さない
+  const capturing = xr.photoPending || !!xr.recorder;
+  const ringWasVisible = xr.ring.visible;
+  const reticleWasVisible = reticle.visible;
+  if (capturing) { xr.ring.visible = false; reticle.visible = false; }
   renderer.render(scene, camera);
+  if (camTex && capturing) capture();
+  xr.ring.visible = ringWasVisible;
+  reticle.visible = reticleWasVisible;
+}
 
-  if (camTex && (xr.photoPending || xr.recorder)) capture();
+function placePanel() {
+  const { reticle, holder, renderer } = xr;
+  const pos = new THREE.Vector3().setFromMatrixPosition(reticle.matrix);
+  holder.position.copy(pos);
+  // 正面(+Z)を端末に向ける
+  const cp = new THREE.Vector3().setFromMatrixPosition(renderer.xr.getCamera().matrixWorld);
+  holder.rotation.set(0, Math.atan2(cp.x - pos.x, cp.z - pos.z), 0);
+  holder.visible = true;
+  navigator.vibrate?.(30);
+  updateShutter();
 }
 
 // XR フレームバッファを読み出して 2D キャンバスへ(上下反転)
@@ -362,6 +473,7 @@ function readFrame() {
   c.restore();
 }
 
+
 function capture() {
   xr.frame++;
   if (xr.photoPending) {
@@ -388,12 +500,14 @@ function pickMime() {
   return '';
 }
 
-function toggleRecording() {
-  const btn = $('xr-rec');
-  if (xr.recorder) {
-    xr.recorder.stop();
-    return;
-  }
+function setMode(mode) {
+  if (xr?.recorder) return;
+  xr.mode = mode;
+  for (const b of document.querySelectorAll('#xr-modes button')) b.classList.toggle('on', b.dataset.mode === mode);
+  $('xr-shutter').className = `shutter ${mode}`;
+}
+
+function startRecording() {
   readFrame(); // キャンバスを初期化
   const mime = pickMime();
   const stream = xr.recCanvas.captureStream(30);
@@ -402,47 +516,69 @@ function toggleRecording() {
   rec.ondataavailable = (e) => e.data.size && chunks.push(e.data);
   rec.onstop = () => {
     const type = rec.mimeType || mime || 'video/webm';
-    const ext = type.includes('mp4') ? 'mp4' : 'webm';
-    save(new Blob(chunks, { type }), `panel_${stamp()}.${ext}`);
-    xr.recorder = null;
-    btn.textContent = '⏺ 録画';
-    btn.classList.remove('rec-on');
+    save(new Blob(chunks, { type }), `panel_${stamp()}.${type.includes('mp4') ? 'mp4' : 'webm'}`);
   };
   rec.start(1000);
   xr.recorder = rec;
-  btn.textContent = '⏹ 停止';
-  btn.classList.add('rec-on');
+  xr.recStart = performance.now();
+  $('xr-shutter').classList.add('recording');
+  $('xr-modes').classList.add('locked');
+  const time = $('xr-rec-time');
+  time.hidden = false;
+  const tick = () => {
+    const s = Math.floor((performance.now() - xr.recStart) / 1000);
+    time.textContent = `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
+  };
+  tick();
+  xr.recTimer = setInterval(tick, 250);
+}
+
+function stopRecording() {
+  if (!xr?.recorder) return;
+  xr.recorder.stop();
+  xr.recorder = null;
+  clearInterval(xr.recTimer);
+  $('xr-rec-time').hidden = true;
+  $('xr-shutter').classList.remove('recording');
+  $('xr-modes').classList.remove('locked');
+}
+
+// 盤を置くまで、またカメラ映像を取り込めない端末では撮影できない
+function updateShutter() {
+  $('xr-shutter').disabled = !(xr?.cameraOk && xr.holder.visible);
+}
+
+function onShutter() {
+  if (!xr?.cameraOk || !xr.holder.visible) return;
+  if (xr.mode === 'photo') xr.photoPending = true;
+  else if (xr.recorder) stopRecording();
+  else startRecording();
 }
 
 function save(blob, name) {
+  const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
+  a.href = url;
   a.download = name;
   document.body.appendChild(a);
   a.click();
   a.remove();
-  setTimeout(() => URL.revokeObjectURL(a.href), 60_000);
-  if (xr) $('xr-msg').textContent = `保存しました: ${name}`;
+  // 直前の撮影をサムネイルに表示
+  const thumb = $('xr-thumb');
+  if (blob.type.startsWith('image/')) {
+    thumb.style.backgroundImage = `url(${url})`;
+  } else if (xr?.recCanvas) {
+    thumb.style.backgroundImage = `url(${xr.recCanvas.toDataURL('image/jpeg', 0.6)})`;
+  }
+  thumb.classList.add('has');
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
 }
 
 const stamp = () => new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
 
-function placePanel() {
-  const { reticle, holder, renderer } = xr;
-  if (!reticle.visible) return;
-  const pos = new THREE.Vector3().setFromMatrixPosition(reticle.matrix);
-  holder.position.copy(pos);
-  // 正面(+Z)を端末に向ける
-  const cam = renderer.xr.getCamera();
-  const cp = new THREE.Vector3().setFromMatrixPosition(cam.matrixWorld);
-  holder.rotation.set(0, Math.atan2(cp.x - pos.x, cp.z - pos.z), 0);
-  holder.visible = true;
-  $('xr-msg').textContent = '配置しました。回転・再配置・撮影ができます';
-}
-
 function endXR() {
   if (!xr) return;
-  if (xr.recorder) xr.recorder.stop();
+  stopRecording();
   xr.hitSource?.cancel?.();
   xr.renderer.setAnimationLoop(null);
   xr.renderer.dispose();
@@ -452,11 +588,12 @@ function endXR() {
   $('setup').hidden = false;
 }
 
-$('xr-place').addEventListener('click', () => xr && placePanel());
-$('xr-rot-l').addEventListener('click', () => xr && (xr.holder.rotation.y += Math.PI / 12));
-$('xr-rot-r').addEventListener('click', () => xr && (xr.holder.rotation.y -= Math.PI / 12));
-$('xr-photo').addEventListener('click', () => xr && (xr.photoPending = true));
-$('xr-rec').addEventListener('click', () => xr && toggleRecording());
+// ボタン上のタッチは AR の操作(長押し配置・回転)として扱わない
+$('xr-overlay').addEventListener('beforexrselect', (e) => {
+  if (e.target.closest?.('button')) e.preventDefault();
+});
+$('xr-shutter').addEventListener('click', onShutter);
+for (const b of document.querySelectorAll('#xr-modes button')) b.addEventListener('click', () => xr && setMode(b.dataset.mode));
 $('xr-exit').addEventListener('click', () => xrSession?.end());
 
 // ---------- 起動 ----------

@@ -7,7 +7,7 @@
 | 端末 | AR表示 | 撮影・保存 |
 |---|---|---|
 | iPhone (Chrome / Safari) | 入力サイズからUSDZを生成し AR Quick Look で表示(拡大縮小は禁止して実寸固定)。USDZ は Service Worker(sw.js)経由で通常の URL として渡す | Quick Look のシャッター(タップ=写真、長押し=動画)→ カメラロール |
-| Android (Chrome, ARCore対応機) | WebXR immersive-ar + hit-test で床に配置、15°ずつ回転 | カメラ映像を取り込み(camera-access)盤と合成 → JPEG / MP4(非対応ならWebM)をダウンロード |
+| Android (Chrome, ARCore対応機) | WebXR immersive-ar + hit-test。白い丸を長押しで配置、盤の足元の輪をなぞって回転 | カメラ映像を取り込み(camera-access)盤と合成(カメラ風UI、置くまで撮影不可)→ JPEG / MP4(非対応ならWebM)をダウンロード |
 
 iOS はどのブラウザも WebKit で WebXR 非対応のため、iPhone は OS 標準の AR Quick Look を使う。iOS 版 Chrome は blob: URL の USDZ を Quick Look で開けないことがあるため、Service Worker で配る。
 
