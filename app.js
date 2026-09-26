@@ -465,20 +465,24 @@ function touchRay(frame, inputSource) {
 
 function onTouchStart(e) {
   const { holder, ringR } = xr;
-  // 扉をタップしたら開閉(離したときに判定)
   if (holder.visible) {
     const ray = touchRay(e.frame, e.inputSource);
-    if (ray && hitDoor(ray, xr.panel) !== null) {
+    const hits = ray ? ray.intersectObject(xr.panel, true) : [];
+    // 扉をタップしたら開閉(離したときに判定)
+    if (hits.length && hits[0].object.userData.door !== undefined) {
       xr.touch = { kind: 'door', t0: performance.now() };
       return;
     }
-  }
-  // 置いた盤の輪(または盤の足元)をタッチしたら回転
-  if (holder.visible) {
+    // 盤の本体を触ったときは何もしない(回転や置き直しと区別する)
+    if (hits.length) {
+      xr.touch = { kind: 'none' };
+      return;
+    }
+    // 足元の輪の上を触ったときだけ回転
     const p = floorPoint(e.frame, e.inputSource, holder.position.y);
     if (p) {
       const d = Math.hypot(p.x - holder.position.x, p.z - holder.position.z);
-      if (d < ringR + 0.25) {
+      if (Math.abs(d - ringR) < 0.2) {
         xr.touch = { kind: 'rotate', source: e.inputSource, a0: angleAround(holder.position, p), r0: holder.rotation.y };
         xr.ring.material.opacity = 1;
         return;
