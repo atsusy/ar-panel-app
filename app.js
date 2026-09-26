@@ -430,6 +430,7 @@ async function startXR() {
 
   xr.cameraOk = !!session.enabledFeatures?.includes('camera-access');
   updateShutter();
+  updateDoorButton();
 
   session.addEventListener('end', endXR);
   session.addEventListener('selectstart', onTouchStart);
@@ -468,10 +469,10 @@ function onTouchStart(e) {
   if (holder.visible) {
     const ray = touchRay(e.frame, e.inputSource);
     const hits = ray ? ray.intersectObject(xr.panel, true) : [];
-    // 盤を触ったら、ドラッグで移動。扉を動かさずに離したら開閉
+    // 盤(扉を含む)を触ったらドラッグで移動
     if (hits.length) {
       xr.touch = {
-        kind: hits[0].object.userData.door !== undefined ? 'door' : 'move',
+        kind: 'move',
         source: e.inputSource, t0: performance.now(),
         p0: floorPoint(e.frame, e.inputSource, holder.position.y),
         pos0: holder.position.clone(),
@@ -495,9 +496,6 @@ function onTouchStart(e) {
 
 function onTouchEnd() {
   if (!xr) return;
-  if (xr.touch?.kind === 'door' && performance.now() - xr.touch.t0 < 500) {
-    setDoors(xr.panel, !xr.panel.userData.doorsOpen);
-  }
   xr.touch = null;
   xr.progress.visible = false;
   xr.ring.material.opacity = 0.55;
@@ -530,15 +528,9 @@ function onXRFrame(time, frame) {
       xr.touch = { kind: 'done' };
       xr.progress.visible = false;
     }
-  } else if ((touch?.kind === 'move' || touch?.kind === 'door') && touch.p0) {
+  } else if (touch?.kind === 'move' && touch.p0) {
     const p = floorPoint(frame, touch.source, holder.position.y);
-    if (p) {
-      const dx = p.x - touch.p0.x;
-      const dz = p.z - touch.p0.z;
-      // 3cm 以上動いたら扉のタップではなく移動とみなす
-      if (touch.kind === 'door' && Math.hypot(dx, dz) > 0.03) touch.kind = 'move';
-      if (touch.kind === 'move') holder.position.set(touch.pos0.x + dx, touch.pos0.y, touch.pos0.z + dz);
-    }
+    if (p) holder.position.set(touch.pos0.x + p.x - touch.p0.x, touch.pos0.y, touch.pos0.z + p.z - touch.p0.z);
   } else if (touch?.kind === 'rotate') {
     const p = floorPoint(frame, touch.source, holder.position.y);
     if (p) holder.rotation.y = touch.r0 + (angleAround(holder.position, p) - touch.a0);
@@ -570,6 +562,7 @@ function placePanel() {
   holder.visible = true;
   navigator.vibrate?.(30);
   updateShutter();
+  updateDoorButton();
 }
 
 // XR フレームバッファを読み出して 2D キャンバスへ(上下反転)
@@ -725,6 +718,18 @@ $('xr-overlay').addEventListener('beforexrselect', (e) => {
 $('xr-shutter').addEventListener('click', onShutter);
 for (const b of document.querySelectorAll('#xr-modes button')) b.addEventListener('click', () => xr && setMode(b.dataset.mode));
 $('xr-exit').addEventListener('click', () => xrSession?.end());
+$('xr-door').addEventListener('click', () => {
+  if (!xr?.holder.visible) return;
+  setDoors(xr.panel, !xr.panel.userData.doorsOpen);
+  updateDoorButton();
+});
+function updateDoorButton() {
+  const b = $('xr-door');
+  const open = !!xr?.panel.userData.doorsOpen;
+  b.disabled = !xr?.holder.visible;
+  b.classList.toggle('open', open);
+  b.setAttribute('aria-label', open ? '扉を閉じる' : '扉を開く');
+}
 
 // ---------- 起動 ----------
 onSizeChange();
