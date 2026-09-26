@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>制御盤ARシミュレーション</title>
+<link rel="stylesheet" href="style.css">
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<main id="setup">
+  <h1>制御盤ARシミュレーション</h1>
+
+  <form id="size-form" autocomplete="off">
+    <fieldset>
+      <legend>盤のサイズ (mm)</legend>
+      <label>幅 W <input type="number" id="w" inputmode="numeric" min="100" max="5000" step="10" value="800"></label>
+      <label>高さ H <input type="number" id="h" inputmode="numeric" min="100" max="3000" step="10" value="1900"></label>
+      <label>奥行 D <input type="number" id="d" inputmode="numeric" min="50" max="2000" step="10" value="400"></label>
+    </fieldset>
+    <label class="color">塗装色
+      <select id="color">
+        <option value="#c8c6b8">5Y7/1 (標準)</option>
+        <option value="#e6e4dc">アイボリー</option>
+        <option value="#a9acae">グレー N7</option>
+        <option value="#f2f2f0">ホワイト</option>
+      </select>
+    </label>
+  </form>
+
+  <div id="preview-wrap"><canvas id="preview"></canvas><div id="dims"></div></div>
+
+  <button id="ar-btn" class="primary" disabled>確認中…</button>
+  <p id="hint" class="hint"></p>
+</main>
+
+<!-- Android WebXR 中に表示するオーバーレイ -->
+<div id="xr-overlay" hidden>
+  <div class="xr-top">
+    <span id="xr-msg">床を映すように端末をゆっくり動かしてください</span>
+    <button id="xr-exit" aria-label="終了">✕</button>
+  </div>
+  <div class="xr-bottom">
+    <div class="row">
+      <button id="xr-rot-l">⟲ 15°</button>
+      <button id="xr-place" class="primary">ここに置く</button>
+      <button id="xr-rot-r">15° ⟳</button>
+    </div>
+    <div class="row">
+      <button id="xr-photo">📷 写真</button>
+      <button id="xr-rec">⏺ 録画</button>
+    </div>
+  </div>
+  <div id="xr-flash"></div>
+</div>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>
