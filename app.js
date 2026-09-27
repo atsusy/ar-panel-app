@@ -212,8 +212,25 @@ function openQuickLook() {
 // ---------- 入力変更 ----------
 let debounce = 0;
 let doorsOpen = false;
+// 前回のサイズと塗装色を端末に記憶する
+const STORE_KEY = 'ar-panel-settings';
+function saveSettings(s) {
+  try {
+    localStorage.setItem(STORE_KEY, JSON.stringify({ w: s.wmm, h: s.hmm, d: s.dmm, color: s.color }));
+  } catch { /* 保存できない環境では記憶しない */ }
+}
+function restoreSettings() {
+  try {
+    const v = JSON.parse(localStorage.getItem(STORE_KEY) || 'null');
+    if (!v) return;
+    for (const k of ['w', 'h', 'd']) if (Number(v[k]) > 0) $(k).value = v[k];
+    if (/^#[0-9a-f]{6}$/i.test(v.color)) $('color').value = v.color;
+  } catch { /* 読めなければ既定値のまま */ }
+}
+
 function onSizeChange() {
   const s = readSize();
+  saveSettings(s);
   const m = toMeters(s);
   if (previewPanel) pScene.remove(previewPanel);
   previewPanel = buildPanel(m, doorsOpen);
@@ -732,6 +749,8 @@ function updateDoorButton() {
 }
 
 // ---------- 起動 ----------
+restoreSettings();
+markSwatch();
 onSizeChange();
 fitPreview(toMeters(readSize()));
 $('size-form').addEventListener('change', () => fitPreview(toMeters(readSize())));
