@@ -18,6 +18,17 @@ input, select { font-size:16px; padding:8px; border:1px solid #cfd5dc; border-ra
 .swatches i { width:18px; height:18px; border-radius:50%; border:1px solid #0003; display:inline-block; }
 .swatches .on { border-color:var(--accent); box-shadow:0 0 0 2px var(--accent) inset; }
 .swatches .custom input { width:22px; height:22px; padding:0; border:none; background:none; }
+.import { margin-bottom:10px; }
+.import .file input { margin-top:4px; }
+#layout-panel { margin-bottom:10px; }
+#layout-panel p { margin:0 0 6px; }
+#layout-panel button { width:100%; padding:8px 12px; font-size:.9rem; }
+#layout-list { list-style:none; margin:10px 0 0; padding:0; display:flex; flex-direction:column; gap:4px; }
+#layout-list li { display:flex; align-items:center; gap:8px; padding:6px 8px; font-size:.85rem; background:#fff; border:1px solid #e1e5ea; border-radius:8px; }
+#layout-list i { flex:none; width:14px; height:14px; border-radius:3px; border:1px solid #0003; }
+#layout-list span { flex:1; min-width:0; overflow-wrap:anywhere; }
+#layout-list small { flex:none; color:var(--muted); font-size:.75rem; }
+[hidden] { display:none !important; }
 #preview-wrap { position:relative; height:46vh; min-height:260px; border-radius:12px; overflow:hidden; background:#dfe3e8; }
 #preview { width:100%; height:100%; display:block; touch-action:none; }
 #door-btn { position:absolute; right:10px; top:10px; padding:8px 12px; font-size:.85rem; background:#fffe; }

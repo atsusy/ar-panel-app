@@ -35,10 +35,19 @@
     </div>
   </form>
 
+  <div class="import">
+    <label class="file">ライン構成を取り込む(aiv-line-3d の layout JSON)<input type="file" id="layout-file" accept=".json,application/json"></label>
+  </div>
+  <section id="layout-panel" hidden>
+    <p id="layout-summary" class="hint"></p>
+    <button type="button" id="layout-clear">取り込みをやめて盤に戻す</button>
+  </section>
+
   <div id="preview-wrap"><canvas id="preview"></canvas><div id="dims"></div><button id="door-btn" type="button">扉を開く</button></div>
 
   <button id="ar-btn" class="primary" disabled>確認中…</button>
   <p id="hint" class="hint"></p>
+  <ul id="layout-list"></ul>
 </main>
 
 <!-- Android WebXR 中に表示するオーバーレイ -->

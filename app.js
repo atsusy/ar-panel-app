@@ -71,8 +71,86 @@ function buildPanel({ w, h, d, color }, doorsOpen = false) {
   return group;
 }
 
+// ---------- ライン構成(aiv-line-3d/layout@1) ----------
+// aiv-line-3d が書き出した機器配置をそのまま箱にする。単位は mm → m、
+// x=進む向き→X、y=床からの高さ→Y、z=奥行き→Z。全体の XZ 中心を原点、床を y=0 に置く。
+// parts[].boxes(機器) と models[](STEP/Blender の設備)の箱を全部描く。作業物は寸法が揃っているときだけ描く。
+const OWN_COLOR = '#9aa5b1';
+const EXT_COLOR = '#6fb1ea';   // 所掌範囲外(顧客支給・既設)
+const WORK_COLOR = '#e8a33d';
+
+function parseLayout(text) {
+  // run_headless.js の標準出力のように、前に別の行が付いていても最後の行を読む
+  const lines = text.trim().split('\n');
+  let j;
+  try { j = JSON.parse(text); } catch { j = JSON.parse(lines[lines.length - 1]); }
+  if (!String(j.schema || '').startsWith('aiv-line-3d/layout@')) throw new Error('aiv-line-3d の layout JSON ではありません');
+  const ok = (p) => Array.isArray(p) && p.length === 3 && p.every(Number.isFinite);
+  const items = [];
+  let skipped = 0;
+  const add = (name, scope, lo, hi, kind) => {
+    if (!ok(lo) || !ok(hi)) { skipped++; return; }
+    items.push({ name, scope: scope === 'ext' ? 'ext' : 'own', lo, hi, kind });
+  };
+  for (const p of j.parts || []) for (const b of p.boxes || []) add(p.name || p.id, p.scope, b.lo, b.hi, p.moving ? 'moving' : 'part');
+  // カメラの視線(レンズ先端→ピントの点)。箱ではないので全体寸法には含めない
+  const beams = (j.cams || []).filter((c) => ok(c.lens_tip) && ok(c.focus)).map((c) => ({ id: c.id, from: c.lens_tip, to: c.focus }));
+  for (const m of j.models || []) add(m.name || m.id, m.scope, m.lo, m.hi, 'model');
+  const w = j.work;
+  if (w && [w.L, w.W, w.H, w.at_x, j.inspection_height].every(Number.isFinite)) {
+    // 検査面の上に作業物が載る前提(検査面=作業物の下面)
+    add('ワーク', 'own', [w.at_x - w.L / 2, j.inspection_height, -w.W / 2], [w.at_x + w.L / 2, j.inspection_height + w.H, w.W / 2], 'work');
+  }
+  if (!items.length) throw new Error('描ける箱がありません');
+  return { items, beams, skipped, label: [j.case?.key, j.case?.product, j.case?.mech].filter(Boolean).join(' / ') };
+}
+
+function buildLayout(layout) {
+  const group = new THREE.Group();
+  group.name = 'layout';
+  const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+  for (const it of layout.items) for (let i = 0; i < 3; i++) {
+    lo[i] = Math.min(lo[i], it.lo[i]);
+    hi[i] = Math.max(hi[i], it.hi[i]);
+  }
+  const cx = (lo[0] + hi[0]) / 2, cz = (lo[2] + hi[2]) / 2;
+  const edge = new THREE.LineBasicMaterial({ color: '#25303b' });
+  const byName = new Map();
+  for (const it of layout.items) {
+    const color = it.kind === 'work' ? WORK_COLOR : it.scope === 'ext' ? EXT_COLOR : OWN_COLOR;
+    const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.6, metalness: 0.2, emissive: '#000000' });
+    if (it.kind === 'moving') { mat.transparent = true; mat.opacity = 0.55; mat.depthWrite = false; }   // 動く部品は静止位置を半透明で
+    const d = [0, 1, 2].map((i) => Math.max(it.hi[i] - it.lo[i], 1) / 1000);
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(d[0], d[1], d[2]), mat);
+    mesh.position.set(((it.lo[0] + it.hi[0]) / 2 - cx) / 1000, (it.lo[1] + it.hi[1]) / 2000, ((it.lo[2] + it.hi[2]) / 2 - cz) / 1000);
+    mesh.add(new THREE.LineSegments(new THREE.EdgesGeometry(mesh.geometry), edge));
+    group.add(mesh);
+    if (!byName.has(it.name)) byName.set(it.name, { name: it.name, scope: it.scope, kind: it.kind, lo: [...it.lo], hi: [...it.hi], meshes: [] });
+    const g = byName.get(it.name);
+    g.meshes.push(mesh);
+    for (let i = 0; i < 3; i++) { g.lo[i] = Math.min(g.lo[i], it.lo[i]); g.hi[i] = Math.max(g.hi[i], it.hi[i]); }
+  }
+  const beamMat = new THREE.MeshBasicMaterial({ color: '#ffd400' });
+  for (const b of layout.beams || []) {
+    const p = (v) => new THREE.Vector3((v[0] - cx) / 1000, v[1] / 1000, (v[2] - cz) / 1000);
+    const a = p(b.from), c = p(b.to), len = a.distanceTo(c);
+    if (len < 0.001) continue;
+    const beam = new THREE.Mesh(new THREE.CylinderGeometry(0.004, 0.004, len, 6), beamMat);
+    beam.position.copy(a).add(c).multiplyScalar(0.5);
+    beam.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), c.clone().sub(a).normalize());
+    beam.name = `beam-${b.id}`;
+    group.add(beam);
+  }
+  group.userData.layout = {
+    w: (hi[0] - lo[0]) / 1000, h: Math.max(hi[1], 0) / 1000, d: (hi[2] - lo[2]) / 1000,
+    parts: [...byName.values()],
+  };
+  return group;
+}
+
 // 扉の開閉。immediate でなければ目標角だけ設定し、animateDoors で動かす
 function setDoors(panel, open, immediate = false) {
+  if (!panel.userData.doors) return;
   panel.userData.doorsOpen = open;
   for (const door of panel.userData.doors) {
     door.target = open ? DOOR_OPEN_ANGLE : 0;
@@ -84,7 +162,7 @@ function setDoors(panel, open, immediate = false) {
 }
 
 function animateDoors(panel, dt) {
-  for (const door of panel.userData.doors) {
+  for (const door of panel.userData.doors || []) {
     const diff = door.target - door.angle;
     if (Math.abs(diff) < 1e-3) continue;
     const step = Math.sign(diff) * Math.min(Math.abs(diff), dt * 2.5); // 約 0.7 秒で全開
@@ -115,9 +193,15 @@ pScene.add(new THREE.HemisphereLight('#ffffff', '#8a8f96', 2.0));
 const sun = new THREE.DirectionalLight('#ffffff', 1.6);
 sun.position.set(2, 4, 3);
 pScene.add(sun);
-const grid = new THREE.GridHelper(6, 12, '#8a939c', '#b7bec6'); // 0.5m 目盛
-pScene.add(grid);
-const pCamera = new THREE.PerspectiveCamera(40, 1, 0.01, 100);
+let grid = null;
+function setGrid(sizeM) {   // 0.5m 目盛
+  if (grid) { pScene.remove(grid); grid.dispose(); }
+  const n = Math.max(12, Math.ceil(sizeM / 0.5 / 2) * 2);
+  grid = new THREE.GridHelper(n * 0.5, n, '#8a939c', '#b7bec6');
+  pScene.add(grid);
+}
+setGrid(6);
+const pCamera = new THREE.PerspectiveCamera(40, 1, 0.01, 200);
 const controls = new OrbitControls(pCamera, pCanvas);
 controls.enableDamping = true;
 let previewPanel = null;
@@ -160,6 +244,21 @@ const swReady = ('serviceWorker' in navigator && 'caches' in window)
   ? navigator.serviceWorker.register('sw.js').then(() => navigator.serviceWorker.ready).catch(() => null)
   : Promise.resolve(null);
 
+// 表示するモデル。ライン構成を取り込んでいればそれ、無ければ盤
+let layout = null;      // parseLayout の結果
+let layoutSeq = 0;      // 取り込むたびに増やす(USDZ のキャッシュ名用)
+
+function buildModel(m, open) {
+  return layout ? buildLayout(layout) : buildPanel(m, open);
+}
+function modelDims(m, model) {
+  return layout ? model.userData.layout : m;
+}
+function usdzName(m) {
+  if (layout) return `usdz/layout_${layoutSeq}.usdz`;
+  return `usdz/panel_${Math.round(m.w * 1000)}x${Math.round(m.h * 1000)}x${Math.round(m.d * 1000)}_${m.color.slice(1)}${doorsOpen ? '_open' : ''}.usdz`;
+}
+
 async function publishUsdz(blob, m) {
   const reg = await swReady;
   if (reg && !navigator.serviceWorker.controller) {
@@ -171,8 +270,7 @@ async function publishUsdz(blob, m) {
   }
   if (reg && navigator.serviceWorker.controller) {
     try {
-      const name = `usdz/panel_${Math.round(m.w * 1000)}x${Math.round(m.h * 1000)}x${Math.round(m.d * 1000)}_${m.color.slice(1)}${doorsOpen ? '_open' : ''}.usdz`;
-      const url = new URL(name, location.href).href;
+      const url = new URL(usdzName(m), location.href).href;
       const cache = await caches.open('usdz');
       await cache.put(url, new Response(blob, { headers: { 'Content-Type': 'model/vnd.usdz+zip' } }));
       return { url, isBlob: false };
@@ -185,7 +283,10 @@ let usdzBuild = 0;
 async function buildUsdz(m) {
   const id = ++usdzBuild;
   const scene = new THREE.Scene();
-  scene.add(buildPanel(m, doorsOpen));
+  scene.add(buildModel(m, doorsOpen));
+  // USDZExporter は object.matrix をそのまま書き出す。描画しないシーンでは未更新なので、
+  // 先に更新しないと全部品が原点に重なる
+  scene.updateMatrixWorld(true);
   const data = await new USDZExporter().parseAsync(scene, {
     quickLookCompatible: true,
     ar: { anchoring: { type: 'plane' }, planeAnchoring: { alignment: 'horizontal' } },
@@ -230,12 +331,18 @@ function restoreSettings() {
 
 function onSizeChange() {
   const s = readSize();
-  saveSettings(s);
+  if (!layout) saveSettings(s);
   const m = toMeters(s);
   if (previewPanel) pScene.remove(previewPanel);
-  previewPanel = buildPanel(m, doorsOpen);
+  previewPanel = buildModel(m, doorsOpen);
   pScene.add(previewPanel);
-  $('dims').textContent = `W${s.wmm} × H${s.hmm} × D${s.dmm} mm`;
+  if (layout) {
+    const L = previewPanel.userData.layout;
+    $('dims').textContent = `全体 長さ${Math.round(L.w * 1000)} × 高さ${Math.round(L.h * 1000)} × 幅${Math.round(L.d * 1000)} mm`;
+  } else {
+    $('dims').textContent = `W${s.wmm} × H${s.hmm} × D${s.dmm} mm`;
+  }
+  $('door-btn').hidden = !!layout;
   if (quickLook) {
     usdzUrl = null;
     updateArButton();
@@ -247,6 +354,71 @@ for (const id of ['w', 'h', 'd', 'color']) {
   $(id).addEventListener('input', onSizeChange);
   $(id).addEventListener('change', onSizeChange);
 }
+// ---------- ライン構成の取り込み ----------
+const LAYOUT_KEY = 'ar-layout-json';
+
+function renderLayoutList() {
+  const box = $('layout-list');
+  box.replaceChildren();
+  if (!layout || !previewPanel) return;
+  const L = previewPanel.userData.layout;
+  const own = L.parts.filter((p) => p.scope === 'own').length;
+  $('layout-summary').textContent =
+    `${layout.label ? layout.label + ' ・ ' : ''}機器 ${L.parts.length} 点(当社 ${own}・所掌範囲外 ${L.parts.length - own})` +
+    (layout.skipped ? ` ・ 座標が欠けた箱 ${layout.skipped} 個は除外` : '');
+  for (const p of L.parts) {
+    const li = document.createElement('li');
+    const dot = document.createElement('i');
+    dot.style.background = p.kind === 'work' ? WORK_COLOR : p.scope === 'ext' ? EXT_COLOR : OWN_COLOR;
+    const name = document.createElement('span');
+    name.textContent = p.name;
+    const dim = document.createElement('small');
+    dim.textContent = `${[0, 1, 2].map((i) => Math.round(p.hi[i] - p.lo[i])).join(' × ')} mm` + (p.scope === 'ext' ? ' ・所掌範囲外' : '');
+    li.append(dot, name, dim);
+    li.addEventListener('click', () => {   // タップで該当の機器を光らせる
+      for (const q of L.parts) for (const mesh of q.meshes) mesh.material.emissive.set(q === p ? '#ffb300' : '#000000');
+    });
+    box.append(li);
+  }
+}
+
+function applyLayout(next, text) {
+  layout = next;
+  layoutSeq++;
+  if (next) {
+    try { localStorage.setItem(LAYOUT_KEY, text); } catch { /* 大きすぎる/保存不可なら記憶しない */ }
+  } else {
+    try { localStorage.removeItem(LAYOUT_KEY); } catch { /* */ }
+  }
+  doorsOpen = false;
+  $('size-form').hidden = !!next;
+  $('layout-panel').hidden = !next;
+  onSizeChange();
+  if (next) {
+    const L = previewPanel.userData.layout;
+    setGrid(Math.max(L.w, L.d) * 1.6);
+    fitPreview(L);
+  } else {
+    setGrid(6);
+    fitPreview(toMeters(readSize()));
+  }
+  renderLayoutList();
+  updateArButton();
+}
+
+$('layout-file').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  e.target.value = '';
+  if (!file) return;
+  try {
+    const text = await file.text();
+    applyLayout(parseLayout(text), text);
+  } catch (err) {
+    alert('取り込めませんでした: ' + err.message);
+  }
+});
+$('layout-clear').addEventListener('click', () => applyLayout(null));
+
 // 塗装色の見本
 function markSwatch() {
   const v = $('color').value.toLowerCase();
@@ -291,7 +463,7 @@ pCanvas.addEventListener('pointerup', (e) => {
   const ndc = new THREE.Vector2(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
   const ray = new THREE.Raycaster();
   ray.setFromCamera(ndc, pCamera);
-  if (hitDoor(ray, previewPanel) !== null) toggleDoors();
+  if (!layout && hitDoor(ray, previewPanel) !== null) toggleDoors();
 });
 
 // ---------- ボタン状態 ----------
@@ -401,10 +573,10 @@ async function startXR() {
   reticle.add(progress);
   scene.add(reticle);
 
-  const m = toMeters(readSize());
   const holder = new THREE.Group();
   holder.visible = false;
-  const panel = buildPanel(m, doorsOpen);
+  const panel = buildModel(toMeters(readSize()), doorsOpen);
+  const m = modelDims(toMeters(readSize()), panel);
   holder.add(panel);
   const shadow = new THREE.Mesh(
     new THREE.PlaneGeometry(m.w * 1.6, m.d * 1.6 + 0.2).rotateX(-Math.PI / 2),
@@ -743,7 +915,7 @@ $('xr-door').addEventListener('click', () => {
 function updateDoorButton() {
   const b = $('xr-door');
   const open = !!xr?.panel.userData.doorsOpen;
-  b.disabled = !xr?.holder.visible;
+  b.disabled = !xr?.holder.visible || !xr.panel.userData.doors;
   b.classList.toggle('open', open);
   b.setAttribute('aria-label', open ? '扉を閉じる' : '扉を開く');
 }
@@ -753,6 +925,10 @@ restoreSettings();
 markSwatch();
 onSizeChange();
 fitPreview(toMeters(readSize()));
+try {   // 前回取り込んだライン構成があれば開く
+  const saved = localStorage.getItem(LAYOUT_KEY);
+  if (saved) applyLayout(parseLayout(saved), saved);
+} catch { /* 読めなければ盤のまま */ }
 $('size-form').addEventListener('change', () => fitPreview(toMeters(readSize())));
 await detectWebXR();
 updateArButton();
