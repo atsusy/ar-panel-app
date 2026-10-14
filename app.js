@@ -638,8 +638,11 @@ async function startXR() {
   // 回転用の輪(盤の足元)。輪の上をなぞると回転する
   const ringR = Math.hypot(m.w, m.d) / 2 + 0.15;
   const ringMat = new THREE.MeshBasicMaterial({ color: '#ffffff', transparent: true, opacity: 0.55, depthWrite: false });
-  const ring = new THREE.Mesh(new THREE.RingGeometry(ringR - 0.02, ringR + 0.02, 96).rotateX(-Math.PI / 2), ringMat);
-  ring.position.y = 0.003;
+  const ring = new THREE.Group();   // 輪と矢印。回転モードのときだけ表示
+  ring.visible = false;
+  const ringMesh = new THREE.Mesh(new THREE.RingGeometry(ringR - 0.02, ringR + 0.02, 96).rotateX(-Math.PI / 2), ringMat);
+  ringMesh.position.y = 0.003;
+  ring.add(ringMesh);
   holder.add(ring);
   // 輪の上の矢印(回せることを示す)
   const arrowGeo = new THREE.ConeGeometry(0.045, 0.1, 3).rotateZ(-Math.PI / 2).rotateX(-Math.PI / 2);
@@ -647,13 +650,13 @@ async function startXR() {
     const arrow = new THREE.Mesh(arrowGeo, ringMat);
     arrow.position.set(Math.sin(a) * ringR, 0.004, Math.cos(a) * ringR);
     arrow.rotation.y = a + (a > 0 ? 0 : Math.PI);
-    holder.add(arrow);
+    ring.add(arrow);
   }
   scene.add(holder);
 
   xr = {
-    session, renderer, scene, camera, reticle, progress, holder, panel, ring, ringR, camQuad, lastTime: 0,
-    hitSource: null, touch: null, mode: 'photo',
+    session, renderer, scene, camera, reticle, progress, holder, panel, ring, ringMat, ringR, camQuad, lastTime: 0,
+    hitSource: null, touch: null, mode: 'photo', rotateMode: false,
     photoPending: false, recorder: null, recStart: 0, recTimer: 0,
     recCanvas: null, recCtx: null, pixels: null, frame: 0,
   };
@@ -703,8 +706,23 @@ function touchRay(frame, inputSource) {
   return new THREE.Raycaster(origin, dir);
 }
 
+const SPIN_GAIN = 2.5;   // 指の動き(視線の向きの変化)に対する回転量の倍率
+
+function rayYaw(ray) {
+  return Math.atan2(ray.ray.direction.x, ray.ray.direction.z);
+}
+
 function onTouchStart(e) {
   const { holder, ringR } = xr;
+  if (holder.visible && xr.rotateMode) {
+    // 回転モード: 画面のどこをなぞっても、指の横移動で回る
+    const ray = touchRay(e.frame, e.inputSource);
+    if (ray) {
+      xr.touch = { kind: 'spin', source: e.inputSource, f0: rayYaw(ray), r0: holder.rotation.y };
+      xr.ringMat.opacity = 1;
+      return;
+    }
+  }
   if (holder.visible) {
     const ray = touchRay(e.frame, e.inputSource);
     const hits = ray ? ray.intersectObject(xr.panel, true) : [];
@@ -718,16 +736,6 @@ function onTouchStart(e) {
       };
       return;
     }
-    // 足元の輪の上を触ったときだけ回転
-    const p = floorPoint(e.frame, e.inputSource, holder.position.y);
-    if (p) {
-      const d = Math.hypot(p.x - holder.position.x, p.z - holder.position.z);
-      if (Math.abs(d - ringR) < 0.2) {
-        xr.touch = { kind: 'rotate', source: e.inputSource, a0: angleAround(holder.position, p), r0: holder.rotation.y };
-        xr.ring.material.opacity = 1;
-        return;
-      }
-    }
   }
   // それ以外は長押しで白い丸の位置に置く
   xr.touch = { kind: 'press', source: e.inputSource, t0: performance.now() };
@@ -737,7 +745,7 @@ function onTouchEnd() {
   if (!xr) return;
   xr.touch = null;
   xr.progress.visible = false;
-  xr.ring.material.opacity = 0.55;
+  xr.ringMat.opacity = 0.55;
 }
 
 function onXRFrame(time, frame) {
@@ -771,6 +779,13 @@ function onXRFrame(time, frame) {
   } else if (touch?.kind === 'move' && touch.p0) {
     const p = floorPoint(frame, touch.source, holder.position.y);
     if (p) holder.position.set(touch.pos0.x + p.x - touch.p0.x, touch.pos0.y, touch.pos0.z + p.z - touch.p0.z);
+  } else if (touch?.kind === 'spin') {
+    const ray = touchRay(frame, touch.source);
+    if (ray) {
+      let d = rayYaw(ray) - touch.f0;
+      d = Math.atan2(Math.sin(d), Math.cos(d));
+      holder.rotation.y = touch.r0 - d * SPIN_GAIN;
+    }
   } else if (touch?.kind === 'rotate') {
     const p = floorPoint(frame, touch.source, holder.position.y);
     if (p) holder.rotation.y = touch.r0 + (angleAround(holder.position, p) - touch.a0);
@@ -970,7 +985,18 @@ function updateDoorButton() {
   b.disabled = !xr?.holder.visible || !(xr.panel.userData.doors || xr.panel.userData.anim);
   b.classList.toggle('open', open);
   b.setAttribute('aria-label', xr?.panel.userData.anim ? (animPlaying ? '一時停止' : '再生') : open ? '扉を閉じる' : '扉を開く');
+  const r = $('xr-rotate');
+  r.disabled = !xr?.holder.visible;
+  if (xr) xr.ring.visible = xr.rotateMode && xr.holder.visible;
+  r.classList.toggle('open', !!xr?.rotateMode);
+  r.setAttribute('aria-pressed', String(!!xr?.rotateMode));
 }
+$('xr-rotate').addEventListener('click', () => {
+  if (!xr?.holder.visible) return;
+  xr.rotateMode = !xr.rotateMode;
+  xr.touch = null;
+  updateDoorButton();
+});
 
 // ---------- 起動 ----------
 restoreSettings();

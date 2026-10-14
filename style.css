@@ -56,7 +56,8 @@ button:disabled { opacity:.5; }
 #xr-overlay .round { width:56px; height:56px; padding:0; border-radius:50%; border:none; background:#0008; color:#fff;
   display:flex; align-items:center; justify-content:center; }
 #xr-overlay .round:disabled { opacity:.35; }
-#xr-door.open { background:#fff; color:#111; }
+#xr-door.open, #xr-rotate.open { background:#fff; color:#111; }
+#xr-rotate { position:absolute; left:12px; top:calc(env(safe-area-inset-top) + 10px); }
 #xr-thumb { position:absolute; right:12px; top:calc(env(safe-area-inset-top) + 10px); }
 .thumb { width:48px; height:48px; border-radius:8px; background:center/cover no-repeat; }
 .thumb.has { border:2px solid #fff; }
