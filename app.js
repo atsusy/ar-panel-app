@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { USDZExporter } from 'three/addons/exporters/USDZExporter.js';
+import { parseAnim, instanceCount, poseAt } from './anim.js';
 
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
@@ -92,17 +93,22 @@ function parseLayout(text) {
     if (!ok(lo) || !ok(hi)) { skipped++; return; }
     items.push({ name, scope: scope === 'ext' ? 'ext' : 'own', lo, hi, kind });
   };
-  for (const p of j.parts || []) for (const b of p.boxes || []) add(p.name || p.id, p.scope, b.lo, b.hi, p.moving ? 'moving' : 'part');
+  // anim（動きのサンプリング）があれば、動く部品の静止位置とワークの箱は動くほうが代わりになるので描かない
+  const anim = parseAnim(j.anim);
+  for (const p of j.parts || []) {
+    if (anim && p.moving) continue;
+    for (const b of p.boxes || []) add(p.name || p.id, p.scope, b.lo, b.hi, p.moving ? 'moving' : 'part');
+  }
   // カメラの視線(レンズ先端→ピントの点)。箱ではないので全体寸法には含めない
   const beams = (j.cams || []).filter((c) => ok(c.lens_tip) && ok(c.focus)).map((c) => ({ id: c.id, from: c.lens_tip, to: c.focus }));
   for (const m of j.models || []) add(m.name || m.id, m.scope, m.lo, m.hi, 'model');
   const w = j.work;
-  if (w && [w.L, w.W, w.H, w.at_x, j.inspection_height].every(Number.isFinite)) {
+  if (!anim && w && [w.L, w.W, w.H, w.at_x, j.inspection_height].every(Number.isFinite)) {
     // 検査面の上に作業物が載る前提(検査面=作業物の下面)
     add('ワーク', 'own', [w.at_x - w.L / 2, j.inspection_height, -w.W / 2], [w.at_x + w.L / 2, j.inspection_height + w.H, w.W / 2], 'work');
   }
   if (!items.length) throw new Error('描ける箱がありません');
-  return { items, beams, skipped, label: [j.case?.key, j.case?.product, j.case?.mech].filter(Boolean).join(' / ') };
+  return { items, beams, anim, skipped, label: [j.case?.key, j.case?.product, j.case?.mech].filter(Boolean).join(' / ') };
 }
 
 function buildLayout(layout) {
@@ -140,6 +146,33 @@ function buildLayout(layout) {
     beam.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), c.clone().sub(a).normalize());
     beam.name = `beam-${b.id}`;
     group.add(beam);
+  }
+  if (layout.anim) {
+    const A = layout.anim, nodes = [];
+    A.tracks.forEach((tr, ti) => {
+      const mat = new THREE.MeshStandardMaterial({ color: tr.spawn != null ? 0xf2a33a : (tr.color ?? 0xb4bcc4), roughness: 0.5, metalness: 0.3 });
+      if (tr.opacity != null && tr.opacity < 1) { mat.transparent = true; mat.opacity = tr.opacity; mat.depthWrite = false; }
+      nodes[ti] = Array.from({ length: instanceCount(A, tr) }, () => {
+        const m = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), mat);
+        m.visible = false;
+        group.add(m);
+        return m;
+      });
+    });
+    group.userData.anim = {
+      anim: A,
+      set(t) {
+        poseAt(A, t, (ti, ci, pos, q, size) => {
+          const m = nodes[ti][ci];
+          if (!pos) { m.visible = false; return; }
+          m.visible = true;
+          m.position.set((pos[0] - cx) / 1000, pos[1] / 1000, (pos[2] - cz) / 1000);
+          m.quaternion.set(q[0], q[1], q[2], q[3]);
+          m.scale.set(Math.max(size[0], 1) / 1000, Math.max(size[1], 1) / 1000, Math.max(size[2], 1) / 1000);
+        });
+      },
+    };
+    group.userData.anim.set(0);
   }
   group.userData.layout = {
     w: (hi[0] - lo[0]) / 1000, h: Math.max(hi[1], 0) / 1000, d: (hi[2] - lo[2]) / 1000,
@@ -221,11 +254,21 @@ function resizePreview() {
 }
 new ResizeObserver(resizePreview).observe(pCanvas);
 
+// ライン構成の動き。プレビューと AR で同じ時刻を使う
+let animPlaying = true, animTime = 0;
+function stepAnim(model, dt) {
+  const a = model?.userData.anim;
+  if (!a) return;
+  if (animPlaying) animTime += dt;
+  a.set(animTime);
+}
+
 const pClock = new THREE.Clock();
 pRenderer.setAnimationLoop(() => {
   const dt = pClock.getDelta();
   if (xrSession) return;
   if (previewPanel) animateDoors(previewPanel, dt);
+  stepAnim(previewPanel, dt);
   controls.update();
   pRenderer.render(pScene, pCamera);
 });
@@ -342,7 +385,9 @@ function onSizeChange() {
   } else {
     $('dims').textContent = `W${s.wmm} × H${s.hmm} × D${s.dmm} mm`;
   }
-  $('door-btn').hidden = !!layout;
+  animTime = 0;
+  $('door-btn').hidden = !!layout && !layout.anim;
+  $('door-btn').textContent = layout ? (animPlaying ? '一時停止' : '再生') : (doorsOpen ? '扉を閉じる' : '扉を開く');
   if (quickLook) {
     usdzUrl = null;
     updateArButton();
@@ -438,6 +483,11 @@ $('size-form').addEventListener('submit', (e) => e.preventDefault());
 
 // 扉の開閉(プレビュー)。iPhone の AR はこの状態で表示する
 function toggleDoors() {
+  if (layout) {   // ライン構成では、動きの再生/一時停止
+    animPlaying = !animPlaying;
+    $('door-btn').textContent = animPlaying ? '一時停止' : '再生';
+    return;
+  }
   doorsOpen = !doorsOpen;
   setDoors(previewPanel, doorsOpen);
   $('door-btn').textContent = doorsOpen ? '扉を閉じる' : '扉を開く';
@@ -697,6 +747,7 @@ function onXRFrame(time, frame) {
   const dt = xr.lastTime ? Math.min((time - xr.lastTime) / 1000, 0.1) : 0;
   xr.lastTime = time;
   animateDoors(xr.panel, dt);
+  stepAnim(xr.panel, dt);
 
   if (xr.hitSource) {
     const hits = frame.getHitTestResults(xr.hitSource);
@@ -909,15 +960,16 @@ for (const b of document.querySelectorAll('#xr-modes button')) b.addEventListene
 $('xr-exit').addEventListener('click', () => xrSession?.end());
 $('xr-door').addEventListener('click', () => {
   if (!xr?.holder.visible) return;
-  setDoors(xr.panel, !xr.panel.userData.doorsOpen);
+  if (xr.panel.userData.anim) animPlaying = !animPlaying;
+  else setDoors(xr.panel, !xr.panel.userData.doorsOpen);
   updateDoorButton();
 });
 function updateDoorButton() {
   const b = $('xr-door');
-  const open = !!xr?.panel.userData.doorsOpen;
-  b.disabled = !xr?.holder.visible || !xr.panel.userData.doors;
+  const open = xr?.panel.userData.anim ? !animPlaying : !!xr?.panel.userData.doorsOpen;
+  b.disabled = !xr?.holder.visible || !(xr.panel.userData.doors || xr.panel.userData.anim);
   b.classList.toggle('open', open);
-  b.setAttribute('aria-label', open ? '扉を閉じる' : '扉を開く');
+  b.setAttribute('aria-label', xr?.panel.userData.anim ? (animPlaying ? '一時停止' : '再生') : open ? '扉を閉じる' : '扉を開く');
 }
 
 // ---------- 起動 ----------
